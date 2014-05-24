@@ -40,10 +40,10 @@ const (
 	SymbolLength = 73
 	SampleRate   = DataRate * SymbolLength
 
-	PreambleSymbols = 42
+	PreambleSymbols = 64
 	PreambleLength  = PreambleSymbols * SymbolLength
 
-	PacketSymbols = 192
+	PacketSymbols = 1472
 	PacketLength  = PacketSymbols * SymbolLength
 
 	PreambleDFTSize = 8192
@@ -51,8 +51,8 @@ const (
 	CenterFreq    = 920299072
 	RestrictLocal = false
 
-	Preamble     = 0x1F2A60
-	PreambleBits = "111110010101001100000"
+	Preamble     = 0x555516A3
+	PreambleBits = "01010101010101010001011010100011"
 
 	GenPoly = 0x16F63
 
@@ -165,8 +165,9 @@ func (rcvr *Receiver) Run() {
 				bits := BitSlice(filtered)
 
 				// If the checksum fails, bail.
-				if rcvr.bch.Encode(bits[16:]) != 0 {
-					continue
+				if rcvr.bch.Encode(bits[16:96]) != 0 {
+                                        config.Log.Print("Invalid checksum")
+					//continue
 				}
 
 				// Parse SCM
@@ -176,9 +177,9 @@ func (rcvr *Receiver) Run() {
 				}
 
 				// If filtering by ID and ID doesn't match, bail.
-				if config.MeterID != 0 && uint(scm.ID) != config.MeterID {
-					continue
-				}
+				//if config.MeterID != 0 && uint(scm.ID) != config.MeterID {
+				//	continue
+				//}
 
 				// Get current file offset.
 				offset, err := config.SampleFile.Seek(0, os.SEEK_CUR)
@@ -290,22 +291,40 @@ func (msg Message) String() string {
 
 // Standard Consumption Message
 type SCM struct {
-	ID          uint32
-	Type        uint8
-	Tamper      Tamper
-	Consumption uint32
-	Checksum    uint16
+        TrainingSync    uint16
+        FrameSync       uint16
+        PacketType      uint8
+        PacketLength    uint16
+        Version         uint8
+	Type            uint8
+	Serial          uint32
+        IntervalCount   uint8
+        State           uint8
+	Tamper          [6]uint8
+        Async           uint16
+        Outage          [6]uint8
+	LastConsumptionCount uint32
+        Intervals       [53]uint8
+        Offset          uint16
+	SerialChecksum  uint16
+        PacketChecksum  uint16
 }
 
 func (scm SCM) String() string {
-	return fmt.Sprintf("{ID:%8d Type:%2d Tamper:%+v Consumption:%8d Checksum:0x%04X}",
-		scm.ID, scm.Type, scm.Tamper, scm.Consumption, scm.Checksum,
+	return fmt.Sprintf("{Sync:0x%04X%04X Type:%2d Length:%2d Version:%2d SCM:{Type:%2d Serial:%8d IntervalCount:%2d Consumption:%8d Checksum:0x%04X} Checksum:0x%04X}",
+		scm.TrainingSync, scm.FrameSync, scm.PacketType, scm.PacketLength, scm.Version,
+                scm.Type, scm.Serial, scm.IntervalCount, scm.LastConsumptionCount,
+                scm.SerialChecksum, scm.PacketChecksum,
 	)
 }
 
 type Tamper struct {
 	Phy uint8
 	Enc uint8
+        T3 uint8
+        T4 uint8
+        T5 uint8
+        T6 uint8
 }
 
 func (t Tamper) String() string {
@@ -314,16 +333,27 @@ func (t Tamper) String() string {
 
 // Given a string of bits, parse the message.
 func ParseSCM(data string) (scm SCM, err error) {
-	if len(data) != 96 {
-		return scm, errors.New("invalid input length")
+	if len(data) != 736 {
+        	return scm, errors.New("invalid input length")
 	}
 
-	scm.ID = uint32(ParseUint(data[21:23] + data[56:80]))
-	scm.Type = uint8(ParseUint(data[26:30]))
-	scm.Tamper.Phy = uint8(ParseUint(data[24:26]))
-	scm.Tamper.Enc = uint8(ParseUint(data[30:32]))
-	scm.Consumption = uint32(ParseUint(data[32:56]))
-	scm.Checksum = uint16(ParseUint(data[80:96]))
+        scm.TrainingSync = uint16(ParseUint(data[:16]))
+        scm.FrameSync = uint16(ParseUint(data[16:32]))
+        scm.PacketType = uint8(ParseUint(data[32:40]))
+        scm.PacketLength = uint16(ParseUint(data[40:56]))
+        scm.Version = uint8(ParseUint(data[56:64]))
+        scm.Type = uint8(ParseUint(data[64:72]))
+        scm.Serial = uint32(ParseUint(data[72:104]))
+        scm.IntervalCount = uint8(ParseUint(data[104:112]))
+        scm.State = uint8(ParseUint(data[112:120]))
+        // Tamper
+        scm.Async = uint16(ParseUint(data[168:184]))
+        // Outage
+        scm.LastConsumptionCount = uint32(ParseUint(data[232:264]))
+        // Intervals
+        scm.Offset = uint16(ParseUint(data[688:704]))
+        scm.SerialChecksum = uint16(ParseUint(data[704:720]))
+        scm.PacketChecksum = uint16(ParseUint(data[720:736]))
 
 	return scm, nil
 }
